@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -13,12 +12,12 @@ const (
 )
 
 type ResponseStruct struct {
-	Body  string `json:"cleaned_body,omitempty"`
+	Body  any    `json:"body,omitempty"`
 	Error string `json:"error,omitempty"`
 	Valid bool   `json:"valid"`
 }
 
-func respondWithError(w http.ResponseWriter, err string, statusCode int) {
+func RespondWithError(w http.ResponseWriter, err string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	res := ResponseStruct{
 		Error: err,
@@ -28,14 +27,21 @@ func respondWithError(w http.ResponseWriter, err string, statusCode int) {
 	json.NewEncoder(w).Encode(&res)
 }
 
-func respondWithJSON(w http.ResponseWriter, data any) {
+func RespondWithJSON(w http.ResponseWriter, data any, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
-	res := ResponseStruct{
-		Body:  data.(string),
+	w.WriteHeader(statusCode)
+
+	resStruct := ResponseStruct{
+		Body:  data,
 		Valid: true,
 	}
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(res)
+
+	resp, err := json.MarshalIndent(resStruct, "", "  ")
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	w.Write(resp)
 }
 
 var profaneList = []*regexp.Regexp{
@@ -45,26 +51,10 @@ var profaneList = []*regexp.Regexp{
 }
 var profaneListString = []string{"kerfuffle", "sharbert", "fornax"}
 
-func cleanseChirp(chirp string) string {
+func CleanseChirp(chirp string) string {
 	for _, re := range profaneListString {
 		chirp = strings.ReplaceAll(chirp, re, "****")
 	}
 	return chirp
 
-}
-
-func ValidateChirp(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		respondWithError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	chirp := strings.TrimSpace(string(data))
-	if len(chirp) > maxLen {
-		respondWithError(w, "Chirp is too long", http.StatusBadRequest)
-		return
-	}
-	cleansedChirp := cleanseChirp(chirp)
-
-	respondWithJSON(w, cleansedChirp)
 }

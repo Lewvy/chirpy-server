@@ -1,81 +1,79 @@
 package main
 
 import (
-	"html/template"
+	"database/sql"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"sync/atomic"
 
-	"github.com/Lewvy/chirpy/api"
+	"github.com/Lewvy/chirpy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/valkey-io/valkey-go"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
+	cache          valkey.Client
 }
 
 func main() {
+	godotenv.Load(".env")
 	mux := http.NewServeMux()
-	ServeMux := &http.Server{
+	serveMux := &http.Server{
 		Addr: ":8080",
 	}
+
 	filePathRoot := "."
+
+	dbUrl := os.Getenv("DB_URL")
+
+	db, err := sql.Open("postgres", dbUrl)
+	if err != nil {
+		log.Fatalf("Error connecting to the database: %q", err.Error())
+	}
+	defer db.Close()
+	log.Println("Database initialized successfully")
+
+	valkeyClient, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{os.Getenv("CACHE_ADDR")}})
+
+	if err != nil {
+		log.Fatalf("Error initializing cache")
+	}
+	log.Println("Cache initialized successfully")
+
 	cfg := apiConfig{
 		fileserverHits: atomic.Int32{},
+		dbQueries:      database.New(db),
+		cache:          valkeyClient,
 	}
+	defer valkeyClient.Close()
+	go cfg.Worker()
+
 	handler := http.StripPrefix("/app", http.FileServer(http.Dir(filePathRoot)))
+
 	mux.Handle("/app/", cfg.middlewareMetricsInc(handler))
-	mux.HandleFunc("/app/assets", func(w http.ResponseWriter, r *http.Request) {
-		path := "assets/chirp.html"
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			log.Println("file not found: ", path)
-			http.NotFound(w, r)
-			return
-		}
-		log.Println("Serving file: ", path)
-		http.ServeFile(w, r, path)
-	})
-	mux.Handle("GET /api/healthz", http.HandlerFunc(Readiness))
-	mux.HandleFunc("POST /api/validate_chirp", api.ValidateChirp)
+	mux.HandleFunc("/app/assets", GetAssets)
+
+	mux.HandleFunc("POST /api/chirps", cfg.PostChirps)
+
+	mux.HandleFunc("POST /api/users/register", cfg.RegisterUser)
+	mux.HandleFunc("POST /api/users/login", cfg.Login)
+	mux.HandleFunc("PATCH /api/users/password-reset", cfg.PasswordReset)
+
+	mux.HandleFunc("GET /api/chirps", cfg.GetAllChirps)
+	mux.HandleFunc("GET /api/chirps/{id}", cfg.GetChirp)
+
+	mux.HandleFunc("GET /api/healthz", Readiness)
+
 	mux.HandleFunc("GET /admin/metrics", cfg.Metrics)
-	mux.HandleFunc("POST /admin/reset", cfg.Reset)
+	mux.Handle("POST /admin/reset", cfg.middlewareCheckPlatform(cfg.DeleteAllUsers()))
+
 	mux.Handle("/debug/pprof/", http.DefaultServeMux)
-	log.Printf("Serving files from %s on port %s\n", filePathRoot, ServeMux.Addr)
-	log.Fatal(http.ListenAndServe(ServeMux.Addr, mux))
-}
 
-func Readiness(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte("OK"))
-	if err != nil {
-		log.Fatalf("Unexpected error: %q", err)
-	}
-}
-
-func (cfg *apiConfig) Metrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Content-Type", "text/html; charset=utf-8")
-
-	w.WriteHeader(http.StatusOK)
-
-	tmpl := template.Must(template.New("metrics").Parse(
-		`
-		<html>
-			<body> 
-				<h1>Welcome, Chirpy Admin</h1>
-				<p>Chirpy has been visited {{.Hits}} times!</p> 
-			</body>
-		</html> 
-		`))
-	data := struct {
-		Hits int64
-	}{
-		Hits: int64(cfg.fileserverHits.Load()),
-	}
-	tmpl.Execute(w, data)
-}
-
-func (cfg *apiConfig) Reset(w http.ResponseWriter, r *http.Request) {
-	cfg.fileserverHits.Store(0)
+	log.Printf("Serving files from %s on port %s\n", filePathRoot, serveMux.Addr)
+	log.Fatal(http.ListenAndServe(serveMux.Addr, mux))
 }

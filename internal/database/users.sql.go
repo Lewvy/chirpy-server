@@ -12,19 +12,64 @@ import (
 	"github.com/google/uuid"
 )
 
-const createUser = `-- name: CreateUser :one
-INSERT INTO users (id, created_at, updated_at, email)
+const clearTable = `-- name: ClearTable :exec
+TRUNCATE TABLE users RESTART IDENTITY CASCADE
+`
+
+func (q *Queries) ClearTable(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, clearTable)
+	return err
+}
+
+const createChirp = `-- name: CreateChirp :one
+INSERT INTO chirps (id, created_at, updated_at,body,  user_id)
 VALUES (
-  $1, $2, $3, $4
+    $1, $2, $3, $4, $5
+    )
+RETURNING id, created_at, updated_at, body, user_id
+`
+
+type CreateChirpParams struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) CreateChirp(ctx context.Context, arg CreateChirpParams) (Chirp, error) {
+	row := q.db.QueryRowContext(ctx, createChirp,
+		arg.ID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.Body,
+		arg.UserID,
+	)
+	var i Chirp
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Body,
+		&i.UserID,
+	)
+	return i, err
+}
+
+const createUser = `-- name: CreateUser :one
+INSERT INTO users (id, created_at, updated_at, email, hashed_password)
+VALUES (
+  $1, $2, $3, $4, $5
   )
-RETURNING id, created_at, updated_at, email
+RETURNING id, created_at, updated_at, email, hashed_password
 `
 
 type CreateUserParams struct {
-	ID        uuid.UUID
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Email     string
+	ID             uuid.UUID `json:"id"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Email          string    `json:"email"`
+	HashedPassword string    `json:"hashed_password"`
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
@@ -33,6 +78,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.Email,
+		arg.HashedPassword,
 	)
 	var i User
 	err := row.Scan(
@@ -40,6 +86,98 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
+		&i.HashedPassword,
 	)
 	return i, err
+}
+
+const getAllChirps = `-- name: GetAllChirps :many
+Select id, created_at, updated_at, body, user_id from chirps order by created_at
+`
+
+func (q *Queries) GetAllChirps(ctx context.Context) ([]Chirp, error) {
+	rows, err := q.db.QueryContext(ctx, getAllChirps)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Chirp
+	for rows.Next() {
+		var i Chirp
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Body,
+			&i.UserID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getChirpByID = `-- name: GetChirpByID :one
+Select id, created_at, updated_at, body, user_id from chirps where id = $1
+`
+
+func (q *Queries) GetChirpByID(ctx context.Context, id uuid.UUID) (Chirp, error) {
+	row := q.db.QueryRowContext(ctx, getChirpByID, id)
+	var i Chirp
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Body,
+		&i.UserID,
+	)
+	return i, err
+}
+
+const getUserByEmail = `-- name: GetUserByEmail :one
+Select id, hashed_password, email, created_at, updated_at from users where email = $1
+`
+
+type GetUserByEmailRow struct {
+	ID             uuid.UUID `json:"id"`
+	HashedPassword string    `json:"hashed_password"`
+	Email          string    `json:"email"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error) {
+	row := q.db.QueryRowContext(ctx, getUserByEmail, email)
+	var i GetUserByEmailRow
+	err := row.Scan(
+		&i.ID,
+		&i.HashedPassword,
+		&i.Email,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateUserPw = `-- name: UpdateUserPw :exec
+Update users
+set hashed_password = $1
+where email = $2
+`
+
+type UpdateUserPwParams struct {
+	HashedPassword string `json:"hashed_password"`
+	Email          string `json:"email"`
+}
+
+func (q *Queries) UpdateUserPw(ctx context.Context, arg UpdateUserPwParams) error {
+	_, err := q.db.ExecContext(ctx, updateUserPw, arg.HashedPassword, arg.Email)
+	return err
 }
