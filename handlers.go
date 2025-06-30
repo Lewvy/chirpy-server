@@ -163,7 +163,9 @@ var jobQueue = make(chan EmailJob, 100)
 func (cfg *apiConfig) Worker() {
 	from := os.Getenv("COMPANY_EMAIL")
 	password := os.Getenv("COMPANY_PWD")
-	smtpServer := smtpServer{host: "smtp.gmail.com", port: "587"}
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpPort := os.Getenv("SMTP_PORT")
+	smtpServer := smtpServer{host: smtpHost, port: smtpPort}
 	for job := range jobQueue {
 		otp, err := generateOTP()
 		if err != nil {
